@@ -28,30 +28,26 @@ if not BOT_TOKEN:
     BOT_TOKEN = "8671810898:AAELwd5oEBhV5PwgSNq8bYaTP7SAX1Mvpdg"
 
 ADMIN_IDS = [8115647701]
-SUPPORT_USERNAME = "eterny_support"  # для перенаправления в тикетах
+SUPPORT_USERNAME = "eterny_support"
 
 PRICE_30_DAYS = 159
 PRICE_90_DAYS = 419
 PRICE_180_DAYS = 799
 REFERRAL_BONUS_DAYS = 7
-MAX_REFERRAL_BONUS_DAYS = 30   # лимит реферальных бонусов
-TRIAL_DAYS = 1                  # пробный период (дней)
+MAX_REFERRAL_BONUS_DAYS = 30
+TRIAL_DAYS = 1
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ---------- FSM состояния ----------
+# ---------- FSM ----------
 class PromoState(StatesGroup):
     waiting_for_code = State()
 
 class MailingState(StatesGroup):
     waiting_for_text = State()
-
-class TicketState(StatesGroup):
-    waiting_for_message = State()
-    waiting_for_answer = State()
 
 # ---------- ЯЗЫКИ ----------
 LANGUAGES = {
@@ -61,7 +57,6 @@ LANGUAGES = {
         'help': "📖 Как пользоваться ботом:\n\n1. Купите ключ через раздел «💳 Оплата»\n2. Установите VPN-клиент: Hiddify, v2rayNG или V2Box\n3. Импортируйте полученный ключ в приложение\n4. Подключайтесь!\n\n🔗 Подробная инструкция:\nhttps://telegra.ph/Kak-nastroit-VPN-Gajd-za-2-minuty-03-27\n\n📞 Поддержка: @eterny_support",
         'trial_active': "🎁 *Пробный период активирован!*\n\nВы получили {days} день подписки.\nВаш ключ:\n`{key}`\n\nНажмите «🔌 Подключиться», чтобы скопировать.",
         'trial_already': "❌ Вы уже использовали пробный период.",
-        'trial_error': "❌ Ошибка активации пробного периода.",
         'promo_success': "✅ Промокод активирован! +{days} бонусных дней.",
         'promo_invalid': "❌ Промокод недействителен или истёк.",
         'promo_used': "❌ Вы уже использовали этот промокод.",
@@ -71,10 +66,9 @@ LANGUAGES = {
         'key_resent': "🔑 Ваш ключ:\n`{key}`",
         'key_reset': "✅ Ключ успешно сброшен и заменён на новый.",
         'blacklisted': "⛔ Вы заблокированы. Обратитесь к администратору.",
-        'ticket_created': "✅ Ваше обращение отправлено. Мы ответим в ближайшее время.",
-        'ticket_reply': "📩 Ответ от поддержки:\n\n{answer}",
         'main_menu': "Главное меню",
         'not_admin': "❌ У вас нет прав администратора.",
+        'reminder': "⚠️ Ваша подписка истекает через 3 дня. Продлите, чтобы не потерять доступ.",
     },
     'en': {
         'welcome_inactive': "✨ *Welcome to EternyVPN!* ✨\n\n🔒 Your personal access to a free internet\n🔹 No logs\n🔹 No blocks\n🔹 No limits\n\n⚡️ Protocol: *VLESS + XTLS (Reality)*\n🚀 Speed: *-*\n\n❌ *Subscription inactive.*\n👉 Buy a key in the «💳 Payment» section and enjoy freedom!",
@@ -82,7 +76,6 @@ LANGUAGES = {
         'help': "📖 How to use the bot:\n\n1. Buy a key in the «💳 Payment» section\n2. Install a VPN client: Hiddify, v2rayNG or V2Box\n3. Import the received key into the app\n4. Connect!\n\n🔗 Detailed instructions:\nhttps://telegra.ph/Kak-nastroit-VPN-Gajd-za-2-minuty-03-27\n\n📞 Support: @eterny_support",
         'trial_active': "🎁 *Trial period activated!*\n\nYou received {days} day(s) of subscription.\nYour key:\n`{key}`\n\nClick «🔌 Подключиться» to copy.",
         'trial_already': "❌ You have already used the trial period.",
-        'trial_error': "❌ Trial activation error.",
         'promo_success': "✅ Promocode activated! +{days} bonus days.",
         'promo_invalid': "❌ Promocode invalid or expired.",
         'promo_used': "❌ You have already used this promocode.",
@@ -92,10 +85,9 @@ LANGUAGES = {
         'key_resent': "🔑 Your key:\n`{key}`",
         'key_reset': "✅ Key successfully reset and replaced with a new one.",
         'blacklisted': "⛔ You are blocked. Contact the administrator.",
-        'ticket_created': "✅ Your request has been sent. We will reply soon.",
-        'ticket_reply': "📩 Support reply:\n\n{answer}",
         'main_menu': "Main menu",
         'not_admin': "❌ You are not an administrator.",
+        'reminder': "⚠️ Your subscription expires in 3 days. Renew to keep access.",
     }
 }
 
@@ -117,8 +109,7 @@ def init_db():
                 referral_bonus_days INTEGER DEFAULT 0,
                 join_date TEXT,
                 language TEXT DEFAULT 'ru',
-                trial_used BOOLEAN DEFAULT 0,
-                key_regenerated BOOLEAN DEFAULT 0
+                trial_used BOOLEAN DEFAULT 0
             )
         ''')
         cursor.execute('''
@@ -146,16 +137,6 @@ def init_db():
                 user_id INTEGER,
                 amount INTEGER,
                 days INTEGER,
-                created_at TEXT
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                message TEXT,
-                answer TEXT,
-                status TEXT DEFAULT 'open',
                 created_at TEXT
             )
         ''')
@@ -221,7 +202,6 @@ def activate_subscription(user_id, days, record_payment=True, amount=0):
 def add_referral_bonus(referrer_id, referred_id):
     with get_db() as conn:
         cur = conn.cursor()
-        # Проверяем, не превысит ли лимит
         cur.execute("SELECT referral_bonus_days FROM users WHERE user_id = ?", (referrer_id,))
         row = cur.fetchone()
         current_bonus = row[0] if row else 0
@@ -322,7 +302,7 @@ def reset_user_key(user_id):
     new_key = generate_vpn_key()
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE users SET vpn_key = ?, key_regenerated = 1 WHERE user_id = ?", (new_key, user_id))
+        cur.execute("UPDATE users SET vpn_key = ? WHERE user_id = ?", (new_key, user_id))
         conn.commit()
         return new_key
 
@@ -393,18 +373,12 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="◀️ Выход", callback_data="back_to_menu")]
     ])
 
-# ---------- ОБЩИЕ ФУНКЦИИ ----------
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
 async def get_user_lang(user_id):
     user = get_user(user_id)
     if user and user.get('language'):
         return user['language']
     return 'ru'
-
-async def send_message_safe(user_id, text_key, lang, **kwargs):
-    text = LANGUAGES[lang].get(text_key, text_key)
-    if kwargs:
-        text = text.format(**kwargs)
-    await bot.send_message(user_id, text, parse_mode="Markdown")
 
 # ---------- ОБРАБОТЧИКИ ----------
 @dp.message(CommandStart())
@@ -526,9 +500,8 @@ async def trial_handler(message: types.Message):
     key = grant_trial(user_id)
     if key:
         await message.answer(LANGUAGES[lang]['trial_active'].format(days=TRIAL_DAYS, key=key), parse_mode="Markdown", reply_markup=get_main_keyboard(True, user_id in ADMIN_IDS, lang))
-        # Уведомление админу о первом получении ключа
         for admin in ADMIN_IDS:
-            await bot.send_message(admin, f"🔑 Пользователь {user_id} получил пробный ключ (и активировал подписку).")
+            await bot.send_message(admin, f"🔑 Пользователь {user_id} получил пробный ключ.")
     else:
         await message.answer(LANGUAGES[lang]['trial_already'], reply_markup=get_main_keyboard(False, user_id in ADMIN_IDS, lang))
 
@@ -567,50 +540,13 @@ async def back_to_main_handler(message: types.Message):
         text = LANGUAGES[lang]['welcome_inactive']
     await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard(is_active, user_id in ADMIN_IDS, lang))
 
-# ---------- ПОДДЕРЖКА (ТИКЕТЫ) ----------
-@dp.message(lambda m: m.text and not m.text.startswith('/') and m.text not in ["❓ Справка", "🔌 Подключиться", "💳 Оплата", "🎁 Бонусы", "👥 Пригласить друга", "📊 Мои рефералы", "🔄 Сбросить ключ", "🎁 Пробный период", "🎫 Ввести промокод", "◀️ Главное меню", "👑 Админ панель"])
-async def ticket_create(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    lang = await get_user_lang(user_id)
-    text = message.text.strip()
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute('''
-            INSERT INTO tickets (user_id, message, created_at, status)
-            VALUES (?, ?, ?, 'open')
-        ''', (user_id, text, datetime.now().isoformat()))
-        ticket_id = cur.lastrowid
-        conn.commit()
-    # Уведомляем админа
-    for admin in ADMIN_IDS:
-        await bot.send_message(admin, f"📩 Новый тикет #{ticket_id} от пользователя {user_id}:\n\n{text}\n\nДля ответа используйте /answer {ticket_id} текст_ответа")
-    await message.answer(LANGUAGES[lang]['ticket_created'], reply_markup=get_main_keyboard(False, user_id in ADMIN_IDS, lang))
+# ---------- ОБРАБОТКА ЛЮБОГО ДРУГОГО ТЕКСТА (игнор) ----------
+@dp.message()
+async def ignore_all_other(message: types.Message):
+    # Просто игнорируем всё, что не обработано выше
+    pass
 
-@dp.message(Command("answer"))
-async def answer_ticket(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("Использование: /answer <id_тикета> <ответ>")
-        return
-    ticket_id = int(parts[1])
-    answer_text = parts[2]
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM tickets WHERE id = ?", (ticket_id,))
-        row = cur.fetchone()
-        if not row:
-            await message.answer("Тикет не найден.")
-            return
-        user_id = row[0]
-        cur.execute("UPDATE tickets SET answer = ?, status = 'closed' WHERE id = ?", (answer_text, ticket_id))
-        conn.commit()
-    lang = await get_user_lang(user_id)
-    await bot.send_message(user_id, LANGUAGES[lang]['ticket_reply'].format(answer=answer_text), reply_markup=get_main_keyboard(False, False, lang))
-    await message.answer(f"Ответ отправлен пользователю {user_id}.")
-
-# ---------- ИНЛАЙН-КОЛБЭКИ ОПЛАТЫ ----------
+# ---------- ИНЛАЙН-КОЛБЭКИ ----------
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu_callback(callback: types.CallbackQuery):
     await callback.message.delete()
@@ -789,7 +725,6 @@ async def mailing_text(message: types.Message, state: FSMContext):
 
 @dp.callback_query(lambda c: c.data == "admin_load")
 async def admin_load(callback: types.CallbackQuery):
-    # Заглушка
     text = "📈 График нагрузки на сервер:\n(заглушка) Активных подключений: 0\nДанные будут доступны после интеграции с API сервера."
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
@@ -798,7 +733,6 @@ async def admin_load(callback: types.CallbackQuery):
 async def admin_export(callback: types.CallbackQuery):
     csv_data = export_users_to_csv()
     await callback.message.edit_text("📤 Экспорт базы пользователей в CSV:")
-    # Отправляем файл
     await bot.send_document(callback.from_user.id, types.BufferedInputFile(csv_data.encode('utf-8'), filename='users_export.csv'))
     await callback.answer()
 
@@ -822,7 +756,6 @@ async def change_language(message: types.Message):
         conn.commit()
     await message.answer(f"Язык изменён на {lang}")
 
-# ---------- КОМАНДА /referrals (уже есть кнопка, но добавим команду) ----------
 @dp.message(Command("referrals"))
 async def cmd_referrals(message: types.Message):
     user_id = message.from_user.id
@@ -839,7 +772,7 @@ async def cmd_referrals(message: types.Message):
     text = LANGUAGES[lang]['referral_list'].format(list="\n".join(lines))
     await message.answer(text)
 
-# ---------- ФОН. ЗАДАЧА НАПОМИНАНИЙ ----------
+# ---------- ФОНОВАЯ ЗАДАЧА НАПОМИНАНИЙ ----------
 async def reminder_task():
     while True:
         now = datetime.now()
@@ -851,13 +784,14 @@ async def reminder_task():
             for user in users:
                 end_date = datetime.fromisoformat(user['subscription_end'])
                 if now < end_date <= three_days_later:
-                    lang = get_user(user['user_id'])['language'] if get_user(user['user_id']) else 'ru'
-                    text = LANGUAGES[lang].get('reminder', "⚠️ Ваша подписка истекает через 3 дня. Продлите, чтобы не потерять доступ.")
+                    u = get_user(user['user_id'])
+                    lang = u['language'] if u else 'ru'
+                    text = LANGUAGES[lang].get('reminder', "⚠️ Ваша подписка истекает через 3 дня.")
                     try:
                         await bot.send_message(user['user_id'], text)
                     except:
                         pass
-        await asyncio.sleep(21600)  # 6 часов
+        await asyncio.sleep(21600)
 
 # ---------- ЗАПУСК ----------
 async def main():
