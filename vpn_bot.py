@@ -23,7 +23,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     BOT_TOKEN = "8671810898:AAELwd5oEBhV5PwgSNq8bYaTP7SAX1Mvpdg"
 
-ADMIN_IDS = [8115647701]   # твой ID
+ADMIN_IDS = [8115647701]
 
 PRICE_30_DAYS = 159
 PRICE_90_DAYS = 419
@@ -240,13 +240,7 @@ async def start_command(message: types.Message):
             is_active = True
             expires_str = end_date.strftime("%d.%m.%Y %H:%M:%S")
 
-    text = (f"Добро пожаловать в EternyVPN!\n\n"
-            f"Твой личный доступ к свободному интернету\n"
-            f"Без логов   Без блокировок   Без лимитов\n\n"
-            f"Протокол: VLESS + XTLS (Reality)\n"
-            f"Сервера: Нидерланды\n"
-            f"Скорость: до 1 Гбит/с\n"
-            f"Аптайм: 99.9%\n\n")
+    text = f"Добро пожаловать в EternyVPN!\n\nТвой личный доступ к свободному интернету\nБез логов   Без блокировок   Без лимитов\n\nПротокол: VLESS + XTLS (Reality)\nСервера: Нидерланды\nСкорость: до 1 Гбит/с\nАптайм: 99.9%\n\n"
     if is_active:
         text += f"✅ Подписка активна до {expires_str}"
     else:
@@ -256,6 +250,7 @@ async def start_command(message: types.Message):
 
 @dp.message(lambda m: m.text == "❓ Справка")
 async def help_handler(message: types.Message):
+    # Обычный текст без Markdown, чтобы избежать ошибок парсинга
     text = (
         "📖 Как пользоваться ботом:\n\n"
         "1. Купите ключ через раздел «💳 Оплата»\n"
@@ -288,8 +283,8 @@ async def payment_handler(message: types.Message):
 async def bonus_handler(message: types.Message):
     user = get_user(message.from_user.id)
     status = "Активна" if user and user.get("subscription_end") and datetime.fromisoformat(user["subscription_end"]) > datetime.now() else "Не активна"
-    text = f"🎁 Бонусное меню\n\nПодписка: {status}\n\nПриглашай друзей и получай бонусные дни!"
-    await message.answer(text, reply_markup=get_bonus_keyboard())
+    text = f"🎁 **Бонусное меню**\n\nПодписка: {status}\n\nПриглашай друзей и получай бонусные дни!"
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_bonus_keyboard())
 
 @dp.message(lambda m: m.text == "👥 Пригласить друга")
 async def invite_handler(message: types.Message):
@@ -297,18 +292,14 @@ async def invite_handler(message: types.Message):
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
     total, paid = get_referral_stats(user_id)
-    text = (f"👥 Реферальная программа\n\n"
-            f"Приглашено: {total}\n"
-            f"Оплатило: {paid}\n\n"
-            f"➕ За каждого приглашённого, который купит подписку, вы получите +{REFERRAL_BONUS_DAYS} дней.\n\n"
-            f"Ваша ссылка:\n{link}")
-    await message.answer(text, reply_markup=get_back_to_menu_keyboard())
+    text = f"👥 **Реферальная программа**\n\nПриглашено: {total}\nОплатило: {paid}\n\n➕ За каждого приглашённого, который купит подписку, вы получите +{REFERRAL_BONUS_DAYS} дней.\n\nВаша ссылка:\n`{link}`"
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_back_to_menu_keyboard())
 
 @dp.message(lambda m: m.text == "🎫 Ввести промокод")
 async def promo_input_start(message: types.Message):
     await message.answer("Введите промокод одним сообщением:", reply_markup=get_back_to_menu_keyboard())
 
-# Хэндлер для промокодов (только для обычных пользователей, НЕ админов)
+# Хэндлер для ввода промокода (только не админы)
 @dp.message(lambda m: m.text and m.text not in ["🎫 Ввести промокод", "👥 Пригласить друга", "🤝 Партнёрская программа", "◀️ Главное меню", "💳 Оплата", "🎁 Бонусы", "❓ Справка", "🔌 Подключиться", "👑 Админ панель"] and m.from_user.id not in ADMIN_IDS)
 async def check_promo(message: types.Message):
     code = message.text.strip().upper()
@@ -319,7 +310,7 @@ async def check_promo(message: types.Message):
 async def partner_handler(message: types.Message):
     await message.answer("🤝 Партнёрская программа в разработке. Следите за новостями!", reply_markup=get_back_to_menu_keyboard())
 
-# ---------- ИНЛАЙН КОЛБЭКИ ----------
+# ---------- INLINE КОЛБЭКИ ----------
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu_callback(callback: types.CallbackQuery):
     await callback.message.delete()
@@ -406,7 +397,7 @@ async def broadcast_command(message: types.Message):
     count = 0
     for row in users:
         try:
-            await bot.send_message(row[0], text)
+            await bot.send_message(row[0], text, parse_mode="Markdown")
             count += 1
         except:
             pass
@@ -443,23 +434,23 @@ async def admin_top_ref(callback: types.CallbackQuery):
     if not top:
         text = "🏆 Пока нет рефералов."
     else:
-        text = "🏆 Топ пользователей по приглашениям:\n"
+        text = "🏆 **Топ пользователей по приглашениям:**\n"
         for idx, row in enumerate(top, 1):
             name = row['first_name'] or row['username'] or str(row['user_id'])
             text += f"{idx}. {name} — {row['referral_count']} приглашённых\n"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_create_promo")
 async def admin_create_promo(callback: types.CallbackQuery):
     code = generate_promo_code()
     create_promo_code(code, bonus_days=7, max_uses=10, expires_days=30)
-    await callback.message.edit_text(f"🎫 Создан промокод:\n{code}\nБонус: +7 дней\nДействует 30 дней, 10 использований.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.message.edit_text(f"🎫 Создан промокод:\n`{code}`\nБонус: +7 дней\nДействует 30 дней, 10 использований.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_mailing_info")
 async def admin_mailing_info(callback: types.CallbackQuery):
-    await callback.message.edit_text("📢 Для рассылки используйте команду:\n/broadcast Ваше сообщение\n\nСообщение будет отправлено ВСЕМ пользователям бота.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.message.edit_text("📢 Для рассылки используйте команду:\n`/broadcast Ваше сообщение`\n\nСообщение будет отправлено ВСЕМ пользователям бота.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_back")
