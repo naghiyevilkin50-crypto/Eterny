@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import os
 import random
 import string
+import csv
+from io import StringIO
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
@@ -14,6 +16,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,16 +28,76 @@ if not BOT_TOKEN:
     BOT_TOKEN = "8671810898:AAELwd5oEBhV5PwgSNq8bYaTP7SAX1Mvpdg"
 
 ADMIN_IDS = [8115647701]
+SUPPORT_USERNAME = "eterny_support"  # для перенаправления в тикетах
 
 PRICE_30_DAYS = 159
 PRICE_90_DAYS = 419
 PRICE_180_DAYS = 799
 REFERRAL_BONUS_DAYS = 7
+MAX_REFERRAL_BONUS_DAYS = 30   # лимит реферальных бонусов
+TRIAL_DAYS = 1                  # пробный период (дней)
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+
+# ---------- FSM состояния ----------
+class PromoState(StatesGroup):
+    waiting_for_code = State()
+
+class MailingState(StatesGroup):
+    waiting_for_text = State()
+
+class TicketState(StatesGroup):
+    waiting_for_message = State()
+    waiting_for_answer = State()
+
+# ---------- ЯЗЫКИ ----------
+LANGUAGES = {
+    'ru': {
+        'welcome_inactive': "✨ *Добро пожаловать в EternyVPN!* ✨\n\n🔒 Твой личный доступ к свободному интернету\n🔹 Без логов\n🔹 Без блокировок\n🔹 Без лимитов\n\n⚡️ Протокол: *VLESS + XTLS (Reality)*\n🚀 Скорость: *-*\n\n❌ *Подписка не активна.*\n👉 Купи ключ в разделе «💳 Оплата» и наслаждайся свободой!",
+        'welcome_active': "✨ *Добро пожаловать в EternyVPN!* ✨\n\n🔒 Твой личный доступ к свободному интернету\n🔹 Без логов\n🔹 Без блокировок\n🔹 Без лимитов\n\n⚡️ Протокол: *VLESS + XTLS (Reality)*\n🚀 Скорость: *-*\n\n✅ *Подписка активна до:* {expires}\n\n👇 Выберите действие:",
+        'help': "📖 Как пользоваться ботом:\n\n1. Купите ключ через раздел «💳 Оплата»\n2. Установите VPN-клиент: Hiddify, v2rayNG или V2Box\n3. Импортируйте полученный ключ в приложение\n4. Подключайтесь!\n\n🔗 Подробная инструкция:\nhttps://telegra.ph/Kak-nastroit-VPN-Gajd-za-2-minuty-03-27\n\n📞 Поддержка: @eterny_support",
+        'trial_active': "🎁 *Пробный период активирован!*\n\nВы получили {days} день подписки.\nВаш ключ:\n`{key}`\n\nНажмите «🔌 Подключиться», чтобы скопировать.",
+        'trial_already': "❌ Вы уже использовали пробный период.",
+        'trial_error': "❌ Ошибка активации пробного периода.",
+        'promo_success': "✅ Промокод активирован! +{days} бонусных дней.",
+        'promo_invalid': "❌ Промокод недействителен или истёк.",
+        'promo_used': "❌ Вы уже использовали этот промокод.",
+        'referral_link': "👥 *Реферальная программа*\n\nПриглашено: {total}\nОплатило: {paid}\n\n➕ За каждого приглашённого, который купит подписку, вы получите +{bonus} дней.\n\nВаша ссылка:\n{link}",
+        'referral_list': "👥 *Ваши рефералы:*\n{list}",
+        'no_referrals': "❌ У вас пока нет приглашённых.",
+        'key_resent': "🔑 Ваш ключ:\n`{key}`",
+        'key_reset': "✅ Ключ успешно сброшен и заменён на новый.",
+        'blacklisted': "⛔ Вы заблокированы. Обратитесь к администратору.",
+        'ticket_created': "✅ Ваше обращение отправлено. Мы ответим в ближайшее время.",
+        'ticket_reply': "📩 Ответ от поддержки:\n\n{answer}",
+        'main_menu': "Главное меню",
+        'not_admin': "❌ У вас нет прав администратора.",
+    },
+    'en': {
+        'welcome_inactive': "✨ *Welcome to EternyVPN!* ✨\n\n🔒 Your personal access to a free internet\n🔹 No logs\n🔹 No blocks\n🔹 No limits\n\n⚡️ Protocol: *VLESS + XTLS (Reality)*\n🚀 Speed: *-*\n\n❌ *Subscription inactive.*\n👉 Buy a key in the «💳 Payment» section and enjoy freedom!",
+        'welcome_active': "✨ *Welcome to EternyVPN!* ✨\n\n🔒 Your personal access to a free internet\n🔹 No logs\n🔹 No blocks\n🔹 No limits\n\n⚡️ Protocol: *VLESS + XTLS (Reality)*\n🚀 Speed: *-*\n\n✅ *Subscription active until:* {expires}\n\n👇 Choose an action:",
+        'help': "📖 How to use the bot:\n\n1. Buy a key in the «💳 Payment» section\n2. Install a VPN client: Hiddify, v2rayNG or V2Box\n3. Import the received key into the app\n4. Connect!\n\n🔗 Detailed instructions:\nhttps://telegra.ph/Kak-nastroit-VPN-Gajd-za-2-minuty-03-27\n\n📞 Support: @eterny_support",
+        'trial_active': "🎁 *Trial period activated!*\n\nYou received {days} day(s) of subscription.\nYour key:\n`{key}`\n\nClick «🔌 Подключиться» to copy.",
+        'trial_already': "❌ You have already used the trial period.",
+        'trial_error': "❌ Trial activation error.",
+        'promo_success': "✅ Promocode activated! +{days} bonus days.",
+        'promo_invalid': "❌ Promocode invalid or expired.",
+        'promo_used': "❌ You have already used this promocode.",
+        'referral_link': "👥 *Referral program*\n\nInvited: {total}\nPaid: {paid}\n\n➕ For each invited friend who buys a subscription, you get +{bonus} days.\n\nYour link:\n{link}",
+        'referral_list': "👥 *Your referrals:*\n{list}",
+        'no_referrals': "❌ You have no referrals yet.",
+        'key_resent': "🔑 Your key:\n`{key}`",
+        'key_reset': "✅ Key successfully reset and replaced with a new one.",
+        'blacklisted': "⛔ You are blocked. Contact the administrator.",
+        'ticket_created': "✅ Your request has been sent. We will reply soon.",
+        'ticket_reply': "📩 Support reply:\n\n{answer}",
+        'main_menu': "Main menu",
+        'not_admin': "❌ You are not an administrator.",
+    }
+}
 
 # ---------- БАЗА ДАННЫХ ----------
 def init_db():
@@ -51,7 +115,10 @@ def init_db():
                 referral_count INTEGER DEFAULT 0,
                 referral_paid_count INTEGER DEFAULT 0,
                 referral_bonus_days INTEGER DEFAULT 0,
-                join_date TEXT
+                join_date TEXT,
+                language TEXT DEFAULT 'ru',
+                trial_used BOOLEAN DEFAULT 0,
+                key_regenerated BOOLEAN DEFAULT 0
             )
         ''')
         cursor.execute('''
@@ -71,6 +138,30 @@ def init_db():
                 user_id INTEGER,
                 promo_code TEXT,
                 used_at TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount INTEGER,
+                days INTEGER,
+                created_at TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                message TEXT,
+                answer TEXT,
+                status TEXT DEFAULT 'open',
+                created_at TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS blacklist (
+                user_id INTEGER PRIMARY KEY
             )
         ''')
         conn.commit()
@@ -108,15 +199,38 @@ def create_user(user_id, username=None, first_name=None, referrer_id=None):
             cur.execute("UPDATE users SET referral_count = referral_count + 1 WHERE user_id = ?", (referrer_id,))
             conn.commit()
 
-def activate_subscription(user_id, days):
+def activate_subscription(user_id, days, record_payment=True, amount=0):
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT subscription_end FROM users WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT subscription_end, referral_bonus_days FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         current_end = datetime.fromisoformat(row[0]) if row and row[0] else datetime.now()
-        new_end = max(current_end, datetime.now()) + timedelta(days=days)
-        cur.execute("UPDATE users SET subscription_end = ?, is_active = 1 WHERE user_id = ?", (new_end.isoformat(), user_id))
+        bonus_days = row[1] if row else 0
+        new_end = max(current_end, datetime.now()) + timedelta(days=days + bonus_days)
+        cur.execute('''
+            UPDATE users SET subscription_end = ?, is_active = 1, referral_bonus_days = 0 WHERE user_id = ?
+        ''', (new_end.isoformat(), user_id))
         conn.commit()
+        if record_payment:
+            cur.execute('''
+                INSERT INTO payments (user_id, amount, days, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, amount, days, datetime.now().isoformat()))
+            conn.commit()
+
+def add_referral_bonus(referrer_id, referred_id):
+    with get_db() as conn:
+        cur = conn.cursor()
+        # Проверяем, не превысит ли лимит
+        cur.execute("SELECT referral_bonus_days FROM users WHERE user_id = ?", (referrer_id,))
+        row = cur.fetchone()
+        current_bonus = row[0] if row else 0
+        if current_bonus + REFERRAL_BONUS_DAYS > MAX_REFERRAL_BONUS_DAYS:
+            return False
+        cur.execute("UPDATE users SET referral_paid_count = referral_paid_count + 1, referral_bonus_days = referral_bonus_days + ? WHERE user_id = ?", (REFERRAL_BONUS_DAYS, referrer_id))
+        cur.execute("UPDATE users SET referral_bonus_days = referral_bonus_days + ? WHERE user_id = ?", (REFERRAL_BONUS_DAYS, referred_id))
+        conn.commit()
+        return True
 
 def generate_promo_code(length=8):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -141,17 +255,17 @@ def apply_promo_code(user_id, code):
         ''', (code, datetime.now().isoformat()))
         promo = cur.fetchone()
         if not promo:
-            return False, "Промокод недействителен или истёк"
+            return False, "promo_invalid"
         promo = dict(promo)
         cur.execute("SELECT * FROM user_promocodes WHERE user_id = ? AND promo_code = ?", (user_id, code))
         if cur.fetchone():
-            return False, "Вы уже использовали этот промокод"
+            return False, "promo_used"
         if promo['bonus_days'] > 0:
             cur.execute("UPDATE users SET referral_bonus_days = referral_bonus_days + ? WHERE user_id = ?", (promo['bonus_days'], user_id))
         cur.execute("UPDATE promocodes SET used_count = used_count + 1 WHERE code = ?", (code,))
         cur.execute("INSERT INTO user_promocodes (user_id, promo_code, used_at) VALUES (?, ?, ?)", (user_id, code, datetime.now().isoformat()))
         conn.commit()
-        return True, f"Промокод активирован! +{promo['bonus_days']} бонусных дней"
+        return True, promo['bonus_days']
 
 def get_referral_stats(user_id):
     with get_db() as conn:
@@ -162,6 +276,12 @@ def get_referral_stats(user_id):
         paid = cur.fetchone()[0]
         return total, paid
 
+def get_referral_list(user_id):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, first_name, username, is_active FROM users WHERE referrer_id = ?", (user_id,))
+        return cur.fetchall()
+
 def get_top_referrers(limit=3):
     with get_db() as conn:
         cur = conn.cursor()
@@ -171,13 +291,61 @@ def get_top_referrers(limit=3):
         ''', (limit,))
         return cur.fetchall()
 
+def get_active_users():
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, username, first_name, subscription_end FROM users WHERE is_active = 1")
+        return cur.fetchall()
+
+def get_payment_history(user_id=None):
+    with get_db() as conn:
+        cur = conn.cursor()
+        if user_id:
+            cur.execute("SELECT amount, days, created_at FROM payments WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+        else:
+            cur.execute("SELECT user_id, amount, days, created_at FROM payments ORDER BY created_at DESC")
+        return cur.fetchall()
+
+def export_users_to_csv():
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, username, first_name, subscription_end, is_active, referrer_id, referral_count, join_date FROM users")
+        rows = cur.fetchall()
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['user_id', 'username', 'first_name', 'subscription_end', 'is_active', 'referrer_id', 'referral_count', 'join_date'])
+        for row in rows:
+            writer.writerow(list(row))
+        return output.getvalue()
+
+def reset_user_key(user_id):
+    new_key = generate_vpn_key()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET vpn_key = ?, key_regenerated = 1 WHERE user_id = ?", (new_key, user_id))
+        conn.commit()
+        return new_key
+
+def grant_trial(user_id):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT trial_used FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return False
+        cur.execute("UPDATE users SET trial_used = 1 WHERE user_id = ?", (user_id,))
+        conn.commit()
+        activate_subscription(user_id, TRIAL_DAYS, record_payment=False)
+        user = get_user(user_id)
+        return user['vpn_key']
+
 # ---------- КЛАВИАТУРЫ ----------
-def get_main_keyboard(is_active=False, is_admin=False):
+def get_main_keyboard(is_active=False, is_admin=False, lang='ru'):
     buttons = []
     if is_active:
         buttons.append([KeyboardButton(text="🔌 Подключиться")])
     buttons.append([KeyboardButton(text="💳 Оплата"), KeyboardButton(text="🎁 Бонусы")])
-    buttons.append([KeyboardButton(text="❓ Справка")])
+    buttons.append([KeyboardButton(text="❓ Справка"), KeyboardButton(text="🎁 Пробный период")])
     if is_admin:
         buttons.append([KeyboardButton(text="👑 Админ панель")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -199,16 +367,44 @@ def get_tariffs_keyboard():
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_payment")]
     ])
 
-def get_bonus_keyboard():
+def get_bonus_keyboard(lang='ru'):
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🎫 Ввести промокод")],
         [KeyboardButton(text="👥 Пригласить друга")],
-        [KeyboardButton(text="🤝 Партнёрская программа")],
+        [KeyboardButton(text="📊 Мои рефералы")],
+        [KeyboardButton(text="🔄 Сбросить ключ")],
         [KeyboardButton(text="◀️ Главное меню")]
     ], resize_keyboard=True)
 
 def get_back_to_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="◀️ Главное меню")]], resize_keyboard=True)
+
+def get_admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🎫 Промокоды (статистика)", callback_data="admin_promo_stats")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_mailing")],
+        [InlineKeyboardButton(text="👥 Активные пользователи", callback_data="admin_active_users")],
+        [InlineKeyboardButton(text="📜 История платежей", callback_data="admin_payments")],
+        [InlineKeyboardButton(text="📈 График нагрузки", callback_data="admin_load")],
+        [InlineKeyboardButton(text="📤 Экспорт базы (CSV)", callback_data="admin_export")],
+        [InlineKeyboardButton(text="🎫 Создать промокод", callback_data="admin_create_promo")],
+        [InlineKeyboardButton(text="🏆 Топ рефералов", callback_data="admin_top_ref")],
+        [InlineKeyboardButton(text="◀️ Выход", callback_data="back_to_menu")]
+    ])
+
+# ---------- ОБЩИЕ ФУНКЦИИ ----------
+async def get_user_lang(user_id):
+    user = get_user(user_id)
+    if user and user.get('language'):
+        return user['language']
+    return 'ru'
+
+async def send_message_safe(user_id, text_key, lang, **kwargs):
+    text = LANGUAGES[lang].get(text_key, text_key)
+    if kwargs:
+        text = text.format(**kwargs)
+    await bot.send_message(user_id, text, parse_mode="Markdown")
 
 # ---------- ОБРАБОТЧИКИ ----------
 @dp.message(CommandStart())
@@ -216,6 +412,14 @@ async def start_command(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name
+
+    # Проверка чёрного списка
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM blacklist WHERE user_id = ?", (user_id,))
+        if cur.fetchone():
+            await message.answer("⛔ Вы заблокированы.")
+            return
 
     args = message.text.split()
     referrer_id = None
@@ -231,7 +435,11 @@ async def start_command(message: types.Message):
     if not user:
         create_user(user_id, username, first_name, referrer_id)
         user = get_user(user_id)
+        # Уведомление админу о новом пользователе
+        for admin in ADMIN_IDS:
+            await bot.send_message(admin, f"🆕 Новый пользователь!\nID: {user_id}\nUsername: @{username}\nИмя: {first_name}")
 
+    lang = user.get('language', 'ru')
     is_active = False
     expires_str = ""
     if user.get("subscription_end"):
@@ -240,36 +448,28 @@ async def start_command(message: types.Message):
             is_active = True
             expires_str = end_date.strftime("%d.%m.%Y %H:%M:%S")
 
-    text = f"Добро пожаловать в EternyVPN!\n\nТвой личный доступ к свободному интернету\nБез логов   Без блокировок   Без лимитов\n\nПротокол: VLESS + XTLS (Reality)\nСервера: Нидерланды\nСкорость: до 1 Гбит/с\nАптайм: 99.9%\n\n"
     if is_active:
-        text += f"✅ Подписка активна до {expires_str}"
+        text = LANGUAGES[lang]['welcome_active'].format(expires=expires_str)
     else:
-        text += "❌ Подписка не активна. Купите ключ в разделе «Оплата»."
+        text = LANGUAGES[lang]['welcome_inactive']
 
-    await message.answer(text, reply_markup=get_main_keyboard(is_active, user_id in ADMIN_IDS))
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard(is_active, user_id in ADMIN_IDS, lang))
 
 @dp.message(lambda m: m.text == "❓ Справка")
 async def help_handler(message: types.Message):
-    # Обычный текст без Markdown, чтобы избежать ошибок парсинга
-    text = (
-        "📖 Как пользоваться ботом:\n\n"
-        "1. Купите ключ через раздел «💳 Оплата»\n"
-        "2. Установите VPN-клиент: Hiddify, v2rayNG или V2Box\n"
-        "3. Импортируйте полученный ключ в приложение\n"
-        "4. Подключайтесь!\n\n"
-        "🔗 Подробная инструкция:\n"
-        "https://telegra.ph/Kak-nastroit-VPN-Gajd-za-2-minuty-03-27\n\n"
-        "📞 Поддержка: @eterny_support"
-    )
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    text = LANGUAGES[lang]['help']
     await message.answer(text, reply_markup=get_back_to_menu_keyboard())
 
 @dp.message(lambda m: m.text == "🔌 Подключиться")
 async def connect_handler(message: types.Message):
-    user = get_user(message.from_user.id)
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    lang = await get_user_lang(user_id)
     if user and user.get("vpn_key"):
         await message.answer(
-            f"🔗 Ваша ссылка для подключения:\n\n`{user['vpn_key']}`\n\n📱 Инструкция: нажми «Импорт» в приложении → «Вставить из буфера»",
-            parse_mode="Markdown",
+            f"🔗 Ваша ссылка для подключения:\n\n{user['vpn_key']}\n\n📱 Инструкция: нажми «Импорт» в приложении → «Вставить из буфера»",
             reply_markup=get_back_to_menu_keyboard()
         )
     else:
@@ -281,43 +481,148 @@ async def payment_handler(message: types.Message):
 
 @dp.message(lambda m: m.text == "🎁 Бонусы")
 async def bonus_handler(message: types.Message):
-    user = get_user(message.from_user.id)
-    status = "Активна" if user and user.get("subscription_end") and datetime.fromisoformat(user["subscription_end"]) > datetime.now() else "Не активна"
-    text = f"🎁 **Бонусное меню**\n\nПодписка: {status}\n\nПриглашай друзей и получай бонусные дни!"
-    await message.answer(text, parse_mode="Markdown", reply_markup=get_bonus_keyboard())
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    await message.answer("🎁 Бонусное меню", reply_markup=get_bonus_keyboard(lang))
 
 @dp.message(lambda m: m.text == "👥 Пригласить друга")
 async def invite_handler(message: types.Message):
     user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
     total, paid = get_referral_stats(user_id)
-    text = f"👥 **Реферальная программа**\n\nПриглашено: {total}\nОплатило: {paid}\n\n➕ За каждого приглашённого, который купит подписку, вы получите +{REFERRAL_BONUS_DAYS} дней.\n\nВаша ссылка:\n`{link}`"
+    text = LANGUAGES[lang]['referral_link'].format(total=total, paid=paid, bonus=REFERRAL_BONUS_DAYS, link=link)
     await message.answer(text, parse_mode="Markdown", reply_markup=get_back_to_menu_keyboard())
 
+@dp.message(lambda m: m.text == "📊 Мои рефералы")
+async def my_referrals_handler(message: types.Message):
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    referrals = get_referral_list(user_id)
+    if not referrals:
+        await message.answer(LANGUAGES[lang]['no_referrals'], reply_markup=get_back_to_menu_keyboard())
+        return
+    lines = []
+    for ref in referrals:
+        name = ref['first_name'] or ref['username'] or str(ref['user_id'])
+        status = "✅" if ref['is_active'] else "❌"
+        lines.append(f"{status} {name} (ID: {ref['user_id']})")
+    text = LANGUAGES[lang]['referral_list'].format(list="\n".join(lines))
+    await message.answer(text, reply_markup=get_back_to_menu_keyboard())
+
+@dp.message(lambda m: m.text == "🔄 Сбросить ключ")
+async def reset_key_handler(message: types.Message):
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    new_key = reset_user_key(user_id)
+    await message.answer(LANGUAGES[lang]['key_reset'], reply_markup=get_bonus_keyboard(lang))
+    await message.answer(LANGUAGES[lang]['key_resent'].format(key=new_key), parse_mode="Markdown")
+
+@dp.message(lambda m: m.text == "🎁 Пробный период")
+async def trial_handler(message: types.Message):
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    key = grant_trial(user_id)
+    if key:
+        await message.answer(LANGUAGES[lang]['trial_active'].format(days=TRIAL_DAYS, key=key), parse_mode="Markdown", reply_markup=get_main_keyboard(True, user_id in ADMIN_IDS, lang))
+        # Уведомление админу о первом получении ключа
+        for admin in ADMIN_IDS:
+            await bot.send_message(admin, f"🔑 Пользователь {user_id} получил пробный ключ (и активировал подписку).")
+    else:
+        await message.answer(LANGUAGES[lang]['trial_already'], reply_markup=get_main_keyboard(False, user_id in ADMIN_IDS, lang))
+
 @dp.message(lambda m: m.text == "🎫 Ввести промокод")
-async def promo_input_start(message: types.Message):
-    await message.answer("Введите промокод одним сообщением:", reply_markup=get_back_to_menu_keyboard())
+async def promo_input_start(message: types.Message, state: FSMContext):
+    await state.set_state(PromoState.waiting_for_code)
+    await message.answer("Введите промокод:", reply_markup=get_back_to_menu_keyboard())
 
-# Хэндлер для ввода промокода (только не админы)
-@dp.message(lambda m: m.text and m.text not in ["🎫 Ввести промокод", "👥 Пригласить друга", "🤝 Партнёрская программа", "◀️ Главное меню", "💳 Оплата", "🎁 Бонусы", "❓ Справка", "🔌 Подключиться", "👑 Админ панель"] and m.from_user.id not in ADMIN_IDS)
-async def check_promo(message: types.Message):
+@dp.message(PromoState.waiting_for_code)
+async def process_promo_code(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
     code = message.text.strip().upper()
-    success, msg = apply_promo_code(message.from_user.id, code)
-    await message.answer(msg, reply_markup=get_bonus_keyboard())
+    success, result = apply_promo_code(user_id, code)
+    if success:
+        await message.answer(LANGUAGES[lang]['promo_success'].format(days=result), reply_markup=get_bonus_keyboard(lang))
+    else:
+        await message.answer(LANGUAGES[lang][result], reply_markup=get_bonus_keyboard(lang))
+    await state.clear()
 
-@dp.message(lambda m: m.text == "🤝 Партнёрская программа")
-async def partner_handler(message: types.Message):
-    await message.answer("🤝 Партнёрская программа в разработке. Следите за новостями!", reply_markup=get_back_to_menu_keyboard())
+@dp.message(lambda m: m.text == "◀️ Главное меню")
+async def back_to_main_handler(message: types.Message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    lang = await get_user_lang(user_id)
+    is_active = False
+    expires_str = ""
+    if user and user.get("subscription_end"):
+        end_date = datetime.fromisoformat(user["subscription_end"])
+        if end_date > datetime.now():
+            is_active = True
+            expires_str = end_date.strftime("%d.%m.%Y %H:%M:%S")
+    if is_active:
+        text = LANGUAGES[lang]['welcome_active'].format(expires=expires_str)
+    else:
+        text = LANGUAGES[lang]['welcome_inactive']
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard(is_active, user_id in ADMIN_IDS, lang))
 
-# ---------- INLINE КОЛБЭКИ ----------
+# ---------- ПОДДЕРЖКА (ТИКЕТЫ) ----------
+@dp.message(lambda m: m.text and not m.text.startswith('/') and m.text not in ["❓ Справка", "🔌 Подключиться", "💳 Оплата", "🎁 Бонусы", "👥 Пригласить друга", "📊 Мои рефералы", "🔄 Сбросить ключ", "🎁 Пробный период", "🎫 Ввести промокод", "◀️ Главное меню", "👑 Админ панель"])
+async def ticket_create(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    text = message.text.strip()
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO tickets (user_id, message, created_at, status)
+            VALUES (?, ?, ?, 'open')
+        ''', (user_id, text, datetime.now().isoformat()))
+        ticket_id = cur.lastrowid
+        conn.commit()
+    # Уведомляем админа
+    for admin in ADMIN_IDS:
+        await bot.send_message(admin, f"📩 Новый тикет #{ticket_id} от пользователя {user_id}:\n\n{text}\n\nДля ответа используйте /answer {ticket_id} текст_ответа")
+    await message.answer(LANGUAGES[lang]['ticket_created'], reply_markup=get_main_keyboard(False, user_id in ADMIN_IDS, lang))
+
+@dp.message(Command("answer"))
+async def answer_ticket(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Использование: /answer <id_тикета> <ответ>")
+        return
+    ticket_id = int(parts[1])
+    answer_text = parts[2]
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM tickets WHERE id = ?", (ticket_id,))
+        row = cur.fetchone()
+        if not row:
+            await message.answer("Тикет не найден.")
+            return
+        user_id = row[0]
+        cur.execute("UPDATE tickets SET answer = ?, status = 'closed' WHERE id = ?", (answer_text, ticket_id))
+        conn.commit()
+    lang = await get_user_lang(user_id)
+    await bot.send_message(user_id, LANGUAGES[lang]['ticket_reply'].format(answer=answer_text), reply_markup=get_main_keyboard(False, False, lang))
+    await message.answer(f"Ответ отправлен пользователю {user_id}.")
+
+# ---------- ИНЛАЙН-КОЛБЭКИ ОПЛАТЫ ----------
 @dp.callback_query(lambda c: c.data == "back_to_menu")
 async def back_to_menu_callback(callback: types.CallbackQuery):
     await callback.message.delete()
     user_id = callback.from_user.id
     user = get_user(user_id)
+    lang = await get_user_lang(user_id)
     is_active = user and user.get("subscription_end") and datetime.fromisoformat(user["subscription_end"]) > datetime.now()
-    await callback.message.answer("Главное меню", reply_markup=get_main_keyboard(is_active, user_id in ADMIN_IDS))
+    if is_active:
+        text = LANGUAGES[lang]['welcome_active'].format(expires=datetime.fromisoformat(user["subscription_end"]).strftime("%d.%m.%Y %H:%M:%S"))
+    else:
+        text = LANGUAGES[lang]['welcome_inactive']
+    await callback.message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard(is_active, user_id in ADMIN_IDS, lang))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "back_to_payment")
@@ -355,10 +660,9 @@ async def buy_callback(callback: types.CallbackQuery):
     else:
         days, price = 180, PRICE_180_DAYS
     await callback.message.edit_text(
-        f"💳 Оплата\n\nТариф: {days} дней - {price}₽\n\n🔗 Ссылка для оплаты (заглушка):\n`https://eternyvpn.com/pay/{callback.from_user.id}/{days}`\n\n⚠️ После оплаты нажмите «Проверить оплату»",
-        parse_mode="Markdown",
+        f"💳 Оплата\n\nТариф: {days} дней - {price}₽\n\n🔗 Ссылка для оплаты (заглушка):\nhttps://eternyvpn.com/pay/{callback.from_user.id}/{days}\n\n⚠️ После оплаты нажмите «Проверить оплату»",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"check_{days}")],
+            [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=f"check_{days}_{price}")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_payment")]
         ])
     )
@@ -366,53 +670,22 @@ async def buy_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("check_"))
 async def check_payment_callback(callback: types.CallbackQuery):
-    days = int(callback.data.split("_")[1])
+    parts = callback.data.split("_")
+    days = int(parts[1])
+    price = int(parts[2]) if len(parts) > 2 else 0
     user_id = callback.from_user.id
-    activate_subscription(user_id, days)
+    lang = await get_user_lang(user_id)
+    activate_subscription(user_id, days, amount=price)
     user = get_user(user_id)
     if user and user.get("referrer_id"):
-        referrer_id = user["referrer_id"]
-        with get_db() as conn:
-            cur = conn.cursor()
-            cur.execute("UPDATE users SET referral_paid_count = referral_paid_count + 1 WHERE user_id = ?", (referrer_id,))
-            cur.execute("UPDATE users SET referral_bonus_days = referral_bonus_days + ? WHERE user_id = ?", (REFERRAL_BONUS_DAYS, referrer_id))
-            cur.execute("UPDATE users SET referral_bonus_days = referral_bonus_days + ? WHERE user_id = ?", (REFERRAL_BONUS_DAYS, user_id))
-            conn.commit()
+        add_referral_bonus(user["referrer_id"], user_id)
     await callback.message.edit_text(f"✅ Оплата подтверждена!\n\nПодписка на {days} дней активирована.\n\n🔌 Нажмите «Подключиться», чтобы получить ключ.")
     await callback.answer("Подписка активирована!")
 
-# ---------- АДМИН-КОМАНДЫ ----------
-@dp.message(Command("broadcast"))
-async def broadcast_command(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    text = message.text.replace("/broadcast", "", 1).strip()
-    if not text:
-        await message.answer("Напишите текст после /broadcast, например:\n/broadcast Всем привет!")
-        return
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM users")
-        users = cur.fetchall()
-    count = 0
-    for row in users:
-        try:
-            await bot.send_message(row[0], text, parse_mode="Markdown")
-            count += 1
-        except:
-            pass
-    await message.answer(f"✅ Рассылка завершена. Отправлено {count} пользователям.")
-
+# ---------- АДМИН-ПАНЕЛЬ ----------
 @dp.message(lambda m: m.text == "👑 Админ панель" and m.from_user.id in ADMIN_IDS)
 async def admin_panel(message: types.Message):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎫 Создать промокод", callback_data="admin_create_promo")],
-        [InlineKeyboardButton(text="📢 Рассылка (через /broadcast)", callback_data="admin_mailing_info")],
-        [InlineKeyboardButton(text="🏆 Топ рефералов", callback_data="admin_top_ref")],
-        [InlineKeyboardButton(text="◀️ Выход", callback_data="back_to_menu")]
-    ])
-    await message.answer("👑 Админ-панель", reply_markup=keyboard)
+    await message.answer("👑 Админ-панель", reply_markup=get_admin_keyboard())
 
 @dp.callback_query(lambda c: c.data == "admin_stats")
 async def admin_stats(callback: types.CallbackQuery):
@@ -428,29 +701,105 @@ async def admin_stats(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "admin_top_ref")
-async def admin_top_ref(callback: types.CallbackQuery):
-    top = get_top_referrers(3)
-    if not top:
-        text = "🏆 Пока нет рефералов."
+@dp.callback_query(lambda c: c.data == "admin_active_users")
+async def admin_active_users(callback: types.CallbackQuery):
+    users = get_active_users()
+    if not users:
+        text = "Нет активных пользователей."
     else:
-        text = "🏆 **Топ пользователей по приглашениям:**\n"
-        for idx, row in enumerate(top, 1):
-            name = row['first_name'] or row['username'] or str(row['user_id'])
-            text += f"{idx}. {name} — {row['referral_count']} приглашённых\n"
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+        text = "👥 Активные пользователи:\n"
+        for u in users:
+            name = u['first_name'] or u['username'] or str(u['user_id'])
+            end = datetime.fromisoformat(u['subscription_end']).strftime("%d.%m.%Y")
+            text += f"- {name} (ID: {u['user_id']}) до {end}\n"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_payments")
+async def admin_payments(callback: types.CallbackQuery):
+    payments = get_payment_history()
+    if not payments:
+        text = "История платежей пуста."
+    else:
+        text = "💳 История платежей (последние 20):\n"
+        for p in payments[-20:]:
+            text += f"- Пользователь {p['user_id']}: {p['amount']}₽ за {p['days']} дней ({p['created_at'][:10]})\n"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_promo_stats")
+async def admin_promo_stats(callback: types.CallbackQuery):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT code, bonus_days, used_count, max_uses, expires_at FROM promocodes")
+        promos = cur.fetchall()
+    if not promos:
+        text = "Промокодов нет."
+    else:
+        text = "🎫 Статистика по промокодам:\n"
+        for p in promos:
+            text += f"- {p['code']}: бонус {p['bonus_days']} дн, использований {p['used_count']}/{p['max_uses'] if p['max_uses'] else '∞'}, истекает {p['expires_at'][:10] if p['expires_at'] else 'никогда'}\n"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_create_promo")
 async def admin_create_promo(callback: types.CallbackQuery):
     code = generate_promo_code()
     create_promo_code(code, bonus_days=7, max_uses=10, expires_days=30)
-    await callback.message.edit_text(f"🎫 Создан промокод:\n`{code}`\nБонус: +7 дней\nДействует 30 дней, 10 использований.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.message.edit_text(f"🎫 Создан промокод:\n{code}\nБонус: +7 дней\nДействует 30 дней, 10 использований.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "admin_mailing_info")
-async def admin_mailing_info(callback: types.CallbackQuery):
-    await callback.message.edit_text("📢 Для рассылки используйте команду:\n`/broadcast Ваше сообщение`\n\nСообщение будет отправлено ВСЕМ пользователям бота.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+@dp.callback_query(lambda c: c.data == "admin_top_ref")
+async def admin_top_ref(callback: types.CallbackQuery):
+    top = get_top_referrers(3)
+    if not top:
+        text = "🏆 Пока нет рефералов."
+    else:
+        text = "🏆 Топ пользователей по приглашениям:\n"
+        for idx, row in enumerate(top, 1):
+            name = row['first_name'] or row['username'] or str(row['user_id'])
+            text += f"{idx}. {name} — {row['referral_count']} приглашённых\n"
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_mailing")
+async def admin_mailing_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📢 Введите текст рассылки (можно с Markdown). Для отмены отправьте /cancel")
+    await state.set_state(MailingState.waiting_for_text)
+    await callback.answer()
+
+@dp.message(MailingState.waiting_for_text)
+async def mailing_text(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    text = message.text
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users")
+        users = cur.fetchall()
+    count = 0
+    for row in users:
+        try:
+            await bot.send_message(row[0], text)
+            count += 1
+        except:
+            pass
+    await message.answer(f"✅ Рассылка завершена. Отправлено {count} пользователям.")
+    await state.clear()
+
+@dp.callback_query(lambda c: c.data == "admin_load")
+async def admin_load(callback: types.CallbackQuery):
+    # Заглушка
+    text = "📈 График нагрузки на сервер:\n(заглушка) Активных подключений: 0\nДанные будут доступны после интеграции с API сервера."
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]]))
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "admin_export")
+async def admin_export(callback: types.CallbackQuery):
+    csv_data = export_users_to_csv()
+    await callback.message.edit_text("📤 Экспорт базы пользователей в CSV:")
+    # Отправляем файл
+    await bot.send_document(callback.from_user.id, types.BufferedInputFile(csv_data.encode('utf-8'), filename='users_export.csv'))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_back")
@@ -458,9 +807,62 @@ async def admin_back(callback: types.CallbackQuery):
     await admin_panel(callback.message)
     await callback.answer()
 
+# ---------- КОМАНДА /language ----------
+@dp.message(Command("language"))
+async def change_language(message: types.Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) != 2 or args[1] not in ['ru', 'en']:
+        await message.answer("Использование: /language ru или /language en")
+        return
+    lang = args[1]
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
+        conn.commit()
+    await message.answer(f"Язык изменён на {lang}")
+
+# ---------- КОМАНДА /referrals (уже есть кнопка, но добавим команду) ----------
+@dp.message(Command("referrals"))
+async def cmd_referrals(message: types.Message):
+    user_id = message.from_user.id
+    lang = await get_user_lang(user_id)
+    referrals = get_referral_list(user_id)
+    if not referrals:
+        await message.answer(LANGUAGES[lang]['no_referrals'])
+        return
+    lines = []
+    for ref in referrals:
+        name = ref['first_name'] or ref['username'] or str(ref['user_id'])
+        status = "✅" if ref['is_active'] else "❌"
+        lines.append(f"{status} {name} (ID: {ref['user_id']})")
+    text = LANGUAGES[lang]['referral_list'].format(list="\n".join(lines))
+    await message.answer(text)
+
+# ---------- ФОН. ЗАДАЧА НАПОМИНАНИЙ ----------
+async def reminder_task():
+    while True:
+        now = datetime.now()
+        three_days_later = now + timedelta(days=3)
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, subscription_end FROM users WHERE is_active = 1")
+            users = cur.fetchall()
+            for user in users:
+                end_date = datetime.fromisoformat(user['subscription_end'])
+                if now < end_date <= three_days_later:
+                    lang = get_user(user['user_id'])['language'] if get_user(user['user_id']) else 'ru'
+                    text = LANGUAGES[lang].get('reminder', "⚠️ Ваша подписка истекает через 3 дня. Продлите, чтобы не потерять доступ.")
+                    try:
+                        await bot.send_message(user['user_id'], text)
+                    except:
+                        pass
+        await asyncio.sleep(21600)  # 6 часов
+
 # ---------- ЗАПУСК ----------
 async def main():
     init_db()
+    asyncio.create_task(reminder_task())
     print("🤖 Бот Eterny VPN запущен!")
     await dp.start_polling(bot)
 
